@@ -1,0 +1,23 @@
+{
+  "name": "netflow-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ingest": "node --env-file-if-exists=.env ingest.js",
+    "report": "node --env-file-if-exists=.env report.js",
+    "rollup": "node --env-file-if-exists=.env rollup.js",
+    "rollup:hourly": "node --env-file-if-exists=.env rollup.js --hourly",
+    "rollup:daily": "node --env-file-if-exists=.env rollup.js --daily",
+    "sync": "node --env-file-if-exists=.env sync-mikrotik.js",
+    "sync:router": "node --env-file-if-exists=.env sync-router.js",
+    "backfill": "node --env-file-if-exists=.env rollup.js --backfill",
+    "migrate:mysql": "node --env-file-if-exists=.env migrate-to-mysql.js"
+  },
+  "dependencies": {
+    "mysql2": "^3.24.6"
+  },
+  "devDependencies": {
+    "better-sqlite3": "^13.2.0"
+  }
+}

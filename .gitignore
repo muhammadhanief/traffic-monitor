@@ -1,0 +1,31 @@
+# kredensial & konfigurasi lokal
+.env
+.env.local
+
+# dependensi
+node_modules/
+
+# data & log runtime (jangan masuk repo: berisi traffic nyata)
+data/
+logs/
+*.log
+
+# cadangan / sisa rotasi
+*.old.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# sampah OS/editor
+Thumbs.db
+desktop.ini
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# hasil probe sementara
+probe-*.md
+*.tmp
