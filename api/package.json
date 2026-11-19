@@ -1,0 +1,24 @@
+{
+  "name": "api-traffic-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API dashboard NetFlow Monitor BPS Jateng (Express 5 + mysql2) — deploy ke Vercel",
+  "type": "commonjs",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "db:config": "node --env-file-if-exists=.env tools/init-config.js",
+    "cek": "node tools/cek-endpoint.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0",
+    "jose": "^6.2.18",
+    "mysql2": "^3.24.6"
+  }
+}

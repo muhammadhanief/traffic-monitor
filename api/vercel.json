@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "functions": {
+    "index.js": {
+      "maxDuration": 30,
+      "memory": 512
+    }
+  },
+  "routes": [
+    { "src": "/(.*)", "dest": "index.js" }
+  ]
+}
