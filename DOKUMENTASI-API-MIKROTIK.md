@@ -625,7 +625,7 @@ Jangan menggantikan NetFlow dengan polling API.
 ## 10. Regenerasi & verifikasi
 
 ```powershell
-cd C:\netflow-monitor
+cd C:\netflow-monitor\traffic-monitor-pipeline
 node --env-file-if-exists=.env tools\probe-mikrotik-api.mjs --out inventaris.md
 node --env-file-if-exists=.env tools\probe-mikrotik-api.mjs --json
 ```

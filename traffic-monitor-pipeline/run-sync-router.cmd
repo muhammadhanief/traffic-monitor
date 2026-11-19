@@ -3,10 +3,11 @@ rem ============================================================
 rem  run-sync-router.cmd - pembungkus sync-router.js
 rem  Dipakai Scheduled Task (tiap 1 menit):
 rem    NetflowSyncRouter -> run-sync-router.cmd
-rem  Log: C:\netflow-monitor\logs\sync-router.log
+rem  Log: <folder ini>\logs\sync-router.log
 rem ============================================================
 setlocal
-cd /d "C:\netflow-monitor"
+rem Pindah ke folder script ini sendiri, jadi bisa diletakkan di mana saja.
+cd /d "%~dp0"
 
 if not exist "logs" mkdir "logs"
 

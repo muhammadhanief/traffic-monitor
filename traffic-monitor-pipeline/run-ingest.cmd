@@ -2,10 +2,11 @@
 rem ============================================================
 rem  run-ingest.cmd - pembungkus untuk menjalankan ingest.js
 rem  Dipakai oleh Scheduled Task "NetflowIngest" (24/7).
-rem  Log: C:\netflow-monitor\logs\ingest.log
+rem  Log: <folder ini>\logs\ingest.log
 rem ============================================================
 setlocal
-cd /d "C:\netflow-monitor"
+rem Pindah ke folder script ini sendiri, jadi bisa diletakkan di mana saja.
+cd /d "%~dp0"
 
 rem Bersihkan goflow2 yang tertinggal dari proses sebelumnya.
 rem Kalau tidak, port UDP 2055 tetap terkunci dan start baru gagal.

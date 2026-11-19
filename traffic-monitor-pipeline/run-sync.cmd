@@ -3,10 +3,11 @@ rem ============================================================
 rem  run-sync.cmd - pembungkus sync-mikrotik.js
 rem  Dipakai Scheduled Task (mis. tiap 5 menit):
 rem    NetflowSyncMikrotik -> run-sync.cmd
-rem  Log: C:\netflow-monitor\logs\sync.log
+rem  Log: <folder ini>\logs\sync.log
 rem ============================================================
 setlocal
-cd /d "C:\netflow-monitor"
+rem Pindah ke folder script ini sendiri, jadi bisa diletakkan di mana saja.
+cd /d "%~dp0"
 
 if not exist "logs" mkdir "logs"
 

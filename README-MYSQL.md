@@ -4,6 +4,16 @@ Database sudah dipindah dari SQLite (`data/flows.db`) ke **MySQL 8.0.30**
 (Laragon) di PC ini. Dashboard/dashboard Next.js atau PC lain sekarang bisa
 membaca database langsung lewat jaringan.
 
+> **Struktur repo (sejak pemisahan pipeline & aplikasi web):**
+> seluruh kode pipeline (collector, rollup, sync, wrapper Windows, `tools/`)
+> sekarang berada di subfolder **`traffic-monitor-pipeline/`**. Aplikasi web
+> (backend API + frontend) akan berada di root repo dan punya `package.json`
+> sendiri. Semua perintah `npm run ...`, `node --env-file...`, dan Scheduled
+> Task di dokumen ini dijalankan **dari dalam folder `traffic-monitor-pipeline/`**
+> (kecuali disebut lain). Contoh path di bawah memakai
+> `C:\netflow-monitor\traffic-monitor-pipeline` — sesuaikan dengan lokasi repo
+> Anda.
+
 ## Yang berubah
 
 | File | Keterangan |
@@ -83,7 +93,7 @@ traffic di bawah ambang, supaya totalnya selalu cocok dengan `traffic_daily`.
 Dua task yang perlu didaftarkan (PowerShell **Run as Administrator**):
 
 ```powershell
-$base = @{ Execute = "C:\netflow-monitor\run-rollup.cmd"; WorkingDirectory = "C:\netflow-monitor" }
+$base = @{ Execute = "C:\netflow-monitor\traffic-monitor-pipeline\run-rollup.cmd"; WorkingDirectory = "C:\netflow-monitor\traffic-monitor-pipeline" }
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
   -StartWhenAvailable -MultipleInstances IgnoreNew -RestartCount 5 `
   -RestartInterval (New-TimeSpan -Minutes 5) -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -106,7 +116,7 @@ Register-ScheduledTask -TaskName "NetflowRollupDaily" `
 ```
 
 Jalankan manual kalau perlu: `Start-ScheduledTask NetflowRollupDaily`, log di
-`C:\netflow-monitor\logs\rollup.log`.
+`C:\netflow-monitor\traffic-monitor-pipeline\logs\rollup.log`.
 
 **Setelah task terdaftar, jalankan backfill sekali** (butuh PowerShell biasa, tidak
 perlu admin):
@@ -196,13 +206,13 @@ Uji tanpa router memakai data contoh dan **membatalkan** semua perubahan
 
 ```powershell
 Register-ScheduledTask -TaskName "NetflowSyncMikrotik" `
-  -Action (New-ScheduledTaskAction -Execute "C:\netflow-monitor\run-sync.cmd" -WorkingDirectory "C:\netflow-monitor") `
+  -Action (New-ScheduledTaskAction -Execute "C:\netflow-monitor\traffic-monitor-pipeline\run-sync.cmd" -WorkingDirectory "C:\netflow-monitor\traffic-monitor-pipeline") `
   -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 10)) `
   -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)) `
   -User "SYSTEM" -RunLevel Highest
 ```
 
-Log di `C:\netflow-monitor\logs\sync.log`.
+Log di `C:\netflow-monitor\traffic-monitor-pipeline\logs\sync.log`.
 
 ## Kesehatan, port, sesi & log router (`sync-router.js`)
 
@@ -236,13 +246,13 @@ sebaiknya `/system/ntp/client set enabled=yes servers=id.pool.ntp.org`.
 
 ```powershell
 Register-ScheduledTask -TaskName "NetflowSyncRouter" `
-  -Action (New-ScheduledTaskAction -Execute "C:\netflow-monitor\run-sync-router.cmd" -WorkingDirectory "C:\netflow-monitor") `
+  -Action (New-ScheduledTaskAction -Execute "C:\netflow-monitor\traffic-monitor-pipeline\run-sync-router.cmd" -WorkingDirectory "C:\netflow-monitor\traffic-monitor-pipeline") `
   -Trigger (New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 1)) `
   -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)) `
   -User "SYSTEM" -RunLevel Highest
 ```
 
-Log di `C:\netflow-monitor\logs\sync-router.log`. Retensi: `LOG_KEEP_DAYS`
+Log di `C:\netflow-monitor\traffic-monitor-pipeline\logs\sync-router.log`. Retensi: `LOG_KEEP_DAYS`
 (default 30) dan `SESSION_KEEP_DAYS` (default 180).
 
 ## Daftar lengkap Scheduled Task (untuk membangun ulang server)
@@ -255,7 +265,7 @@ mengembalikan seluruh pipeline 24/7. Semua idempoten (`-Force`), jalankan di
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
   -MultipleInstances IgnoreNew -RestartCount 3 `
   -RestartInterval (New-TimeSpan -Minutes 5) -ExecutionTimeLimit ([TimeSpan]::Zero)
-$dir = "C:\netflow-monitor"
+$dir = "C:\netflow-monitor\traffic-monitor-pipeline"
 ```
 
 Bentuk trigger tiap task berbeda, jadi didaftarkan satu per satu:
@@ -295,7 +305,7 @@ Register-ScheduledTask -TaskName "NetflowSyncRouter" -Force `
 Verifikasi (PowerShell biasa sudah cukup untuk membaca log):
 
 ```powershell
-Get-ChildItem C:\netflow-monitor\logs | Select-Object Name,Length,LastWriteTime
+Get-ChildItem C:\netflow-monitor\traffic-monitor-pipeline\logs | Select-Object Name,Length,LastWriteTime
 node --env-file-if-exists=.env tools\cek-kesehatan.mjs    # target: semua LULUS
 ```
 

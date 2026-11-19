@@ -4,10 +4,11 @@ rem  run-rollup.cmd - pembungkus rollup.js
 rem  Dipakai Scheduled Task:
 rem    NetflowRollupHourly -> run-rollup.cmd --hourly   (tiap jam)
 rem    NetflowRollupDaily  -> run-rollup.cmd --daily    (00:15)
-rem  Log: C:\netflow-monitor\logs\rollup.log
+rem  Log: <folder ini>\logs\rollup.log
 rem ============================================================
 setlocal
-cd /d "C:\netflow-monitor"
+rem Pindah ke folder script ini sendiri, jadi bisa diletakkan di mana saja.
+cd /d "%~dp0"
 
 if not exist "logs" mkdir "logs"
 
