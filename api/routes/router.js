@@ -183,7 +183,7 @@ router.get('/ports', asyncH(async (req, res) => {
       p.jumlah_perangkat += 1;
       p.perangkat.push({
         mac: r.mac,
-        label: config.deviceLabel({ mac: r.mac, hostname: r.hostname, nama: r.nama }, cfg),
+        label: config.deviceLabel({ mac: r.mac, hostname: r.hostname, nama: r.nama }),
         last_ip: r.last_ip || null,
         is_local: Number(r.is_local) === 1,
         last_seen: isoWib(r.last_seen),
@@ -193,9 +193,9 @@ router.get('/ports', asyncH(async (req, res) => {
     // Daftar port yang seharusnya ada (disimpan di setting bila diketahui,
     // karena /interface/ethernet belum disinkronkan ke DB).
     // Dibaca lewat config.loadConfig() yang sudah meng-cache dan sudah tahu
-    // apakah skema konfigurasi ada — JANGAN query cfg langsung di sini, sebab
-    // saat netflow_config tidak tersedia setiap permintaan akan menunggu
-    // connectTimeout (12 detik).
+    // apakah tabel konfigurasi ada — JANGAN query pool cfg langsung di sini,
+    // sebab bila tabel belum dibuat setiap permintaan akan menunggu
+    // connectTimeout.
     const nilaiPort = cfg.settings.get('ethernet_ports') || '';
     const daftarPort = String(nilaiPort).trim()
       ? String(nilaiPort).split(',').map((s) => s.trim()).filter(Boolean)

@@ -9,7 +9,7 @@ const express = require('express');
 const db = require('../db');
 const {
   asyncH, ok, badRequest, ApiError, intParam, strParam, enumParam,
-  rangeQuery, metaFor, cached, cacheTtl,
+  rangeQuery, metaFor,
 } = require('../lib/util');
 const config = require('../lib/config');
 const lookup = require('../lib/lookup');
@@ -62,7 +62,6 @@ router.get('/', asyncH(async (req, res) => {
   );
 
   // Pemakaian hari ini untuk baris di halaman ini saja.
-  const cfg = await config.loadConfig();
   const ips = rows.map((r) => r.last_ip).filter(Boolean);
   let usage = new Map();
   if (ips.length) {
@@ -78,20 +77,19 @@ router.get('/', asyncH(async (req, res) => {
 
   const now = Math.floor(Date.now() / 1000);
   const data = rows.map((r) => {
-    const alias = cfg.aliases.get(r.mac) || null;
     const u = usage.get(r.last_ip) || null;
     return {
       mac: r.mac,
-      label: config.deviceLabel(r, cfg),
-      nama: (alias && alias.nama) || r.nama || null,
+      label: config.deviceLabel(r),
+      nama: r.nama || null,
       hostname: r.hostname || null,
-      pemilik: (alias && alias.pemilik) || r.pemilik || null,
-      grup: (alias && alias.grup) || r.grup || null,
+      pemilik: r.pemilik || null,
+      grup: r.grup || null,
       vendor: r.vendor || null,
       last_ip: r.last_ip || null,
       segmen: r.last_ip ? `${r.last_ip.split('.').slice(0, 3).join('.')}.0/24` : null,
       sumber: r.sumber,
-      manual: !!(alias && (alias.nama || alias.pemilik || alias.grup)),
+      manual: r.sumber === 'manual',
       online: Number(r.aktif) === 1 && r.last_seen_ts !== null && now - Number(r.last_seen_ts) <= 1800,
       last_seen: r.last_seen,
       last_seen_ts: r.last_seen_ts === null ? null : Number(r.last_seen_ts),
@@ -107,7 +105,7 @@ router.get('/', asyncH(async (req, res) => {
     totalPages: Math.ceil(Number(total) / perPage),
     sort,
     filter: { q, segment: segmen, online },
-    sumber: 'devices + device_alias (konfigurasi)',
+    sumber: 'devices + traffic_daily',
   }));
 }));
 
@@ -119,7 +117,7 @@ router.get('/:mac', asyncH(async (req, res) => {
   const range = rangeQuery(req);
 
   const ident = await lookup.byMac(mac);
-  if (!ident.device && !ident.alias) {
+  if (!ident.device) {
     throw new ApiError(404, 'NOT_FOUND', 'Perangkat tidak ditemukan.');
   }
 
@@ -169,13 +167,14 @@ router.get('/:mac', asyncH(async (req, res) => {
     nama: ident.nama,
     pemilik: ident.pemilik,
     grup: ident.grup,
-    vendor: ident.device?.vendor || null,
-    sumber: ident.device?.sumber || (ident.alias ? 'manual' : null),
-    aktif: ident.device ? Number(ident.device.aktif) === 1 : null,
-    last_ip: ident.device?.last_ip || null,
-    last_seen: ident.device?.last_seen || null,
-    last_seen_ts: ident.device?.last_seen_ts ? Number(ident.device.last_seen_ts) : null,
-    manual: ident.alias ? { nama: ident.alias.nama, pemilik: ident.alias.pemilik, grup: ident.alias.grup } : null,
+    vendor: ident.vendor,
+    sumber: ident.sumber,
+    aktif: ident.aktif === null ? null : ident.aktif === 1,
+    last_ip: ident.last_ip,
+    last_seen: ident.last_seen,
+    last_seen_ts: ident.last_seen_ts,
+    // `manual` terisi bila sumber='manual' (diisi lewat PATCH ini).
+    manual: ident.manual ? { nama: ident.nama, pemilik: ident.pemilik, grup: ident.grup } : null,
     ip_history: ips.map((r) => ({ ip: r.ip, from_ts: Number(r.from_ts), sampai: r.to_ts ? Number(r.to_ts) : null })),
     pemakaian: {
       up_bytes: usage.up_bytes,
@@ -201,8 +200,15 @@ router.get('/:mac', asyncH(async (req, res) => {
 }));
 
 // ------------------------------------------------------------
-//  Beri nama (tulis ke skema konfigurasi, bukan ke netflow_monitor)
+//  Beri nama — menulis langsung ke devices.nama/pemilik/grup
 // ------------------------------------------------------------
+//  Kolom manual ini memang hidup di tabel devices (DOKUMENTASI-UI.md §8.2,
+//  §11). sync-mikrotik.js sengaja menjaga nama manual:
+//      nama   = COALESCE(devices.nama, v.nama)
+//      sumber = IF(devices.sumber = 'manual', 'manual', v.sumber)
+//  jadi nama yang diisi di sini tidak akan tertimpa sync berikutnya.
+//
+//  Penulisan memakai pool cfg (CFG_DB_USER), bukan pool data read-only.
 router.patch('/:mac', requireAdmin, asyncH(async (req, res) => {
   const mac = assertMac(req.params.mac);
   const body = req.body || {};
@@ -221,29 +227,24 @@ router.patch('/:mac', requireAdmin, asyncH(async (req, res) => {
   if (nama === undefined && pemilik === undefined && grup === undefined) {
     throw badRequest('Isi minimal satu dari: nama, pemilik, grup.');
   }
-  if (!(await db.configReady())) {
-    throw new ApiError(503, 'CONFIG_UNAVAILABLE',
-      'Database konfigurasi belum siap. Jalankan sql/config-schema.sql (lihat api/README.md).');
-  }
 
-  const existing = await db.cq1('SELECT mac, nama, pemilik, grup FROM device_alias WHERE mac = ?', [mac]) || {};
+  const ada = await db.q1('SELECT mac, nama, pemilik, grup FROM devices WHERE mac = ?', [mac]);
+  if (!ada) throw new ApiError(404, 'NOT_FOUND', 'Perangkat tidak ditemukan.');
+
   const merged = {
-    nama: nama === undefined ? existing.nama ?? null : nama,
-    pemilik: pemilik === undefined ? existing.pemilik ?? null : pemilik,
-    grup: grup === undefined ? existing.grup ?? null : grup,
+    nama: nama === undefined ? ada.nama : nama,
+    pemilik: pemilik === undefined ? ada.pemilik : pemilik,
+    grup: grup === undefined ? ada.grup : grup,
   };
+  const adaManual = !!(merged.nama || merged.pemilik || merged.grup);
 
-  if (!merged.nama && !merged.pemilik && !merged.grup) {
-    // Semua dikosongkan -> hapus penamaan manual, kembali ke hostname.
-    await db.cq('DELETE FROM device_alias WHERE mac = ?', [mac]);
-  } else {
-    await db.cq(`
-      INSERT INTO device_alias (mac, nama, pemilik, grup) VALUES (?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE nama = VALUES(nama), pemilik = VALUES(pemilik), grup = VALUES(grup)`,
-    [mac, merged.nama, merged.pemilik, merged.grup]);
-  }
+  // sumber='manual' menandai bahwa nama diisi manusia. Saat semua dikosongkan,
+  // kembalikan ke 'dhcp'; sync berikutnya akan mengoreksi ke 'arp' bila perlu.
+  await db.cq(
+    'UPDATE devices SET nama = ?, pemilik = ?, grup = ?, sumber = ? WHERE mac = ?',
+    [merged.nama, merged.pemilik, merged.grup, adaManual ? 'manual' : 'dhcp', mac]
+  );
 
-  config.invalidate();
   const ident = await lookup.byMac(mac);
   ok(res, {
     mac,
@@ -251,8 +252,10 @@ router.patch('/:mac', requireAdmin, asyncH(async (req, res) => {
     nama: ident.nama,
     pemilik: ident.pemilik,
     grup: ident.grup,
-    dihapus: !merged.nama && !merged.pemilik && !merged.grup,
-  }, { sumber: 'device_alias (konfigurasi)' });
+    sumber: ident.sumber,
+    manual: ident.manual,
+    dihapus: !adaManual,
+  }, { sumber: 'devices' });
 }));
 
 module.exports = router;

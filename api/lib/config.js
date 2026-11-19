@@ -1,16 +1,20 @@
 'use strict';
 
-// config.js — lapisan konfigurasi aplikasi (skema `netflow_config`).
+// config.js — lapisan konfigurasi aplikasi.
 //
-// Tabel: segment, service_map, device_alias, alert_rule, alert_event, setting.
+// Tabel konfigurasi (segment, service_map, alert_rule, alert_event, setting)
+// hidup di dalam skema netflow_monitor, sama seperti app_user/app_session.
 // Semuanya KECIL (ratusan baris), jadi dibaca sekaligus dan di-cache 60 detik.
 //
-// Prinsip: kalau skema/tabel konfigurasi belum ada, API tetap jalan memakai
-// nilai bawaan (nama dari hostname, port tanpa nama layanan). Tidak ada
-// endpoint yang boleh gagal hanya karena konfigurasi kosong.
+// Prinsip: kalau tabel konfigurasi belum ada, API tetap jalan memakai nilai
+// bawaan (nama dari hostname, port tanpa nama layanan). Tidak ada endpoint yang
+// boleh gagal hanya karena konfigurasi kosong.
+//
+// Nama perangkat TIDAK melalui tabel terpisah — PATCH /api/devices/{mac}
+// menulis ke devices.nama/pemilik/grup langsung (lihat routes/devices.js).
 
 const db = require('../db');
-const { cached, cacheTtl, intParam } = require('./util');
+const { cached, cacheTtl, intParam, __cacheDelete } = require('./util');
 
 // ------------------------------------------------------------
 //  Bawaan bila service_map belum diisi.
@@ -23,11 +27,11 @@ const DEFAULT_SERVICES = [
   [67, 'UDP', 'DHCP', 'Infrastruktur'],
   [123, 'UDP', 'NTP', 'Infrastruktur'],
   [137, 'UDP', 'NetBIOS', 'Berkas lokal'],
-  [139, 'TCP', 'NetBIOS Session', 'Berkas lokal'],
+  [139, 'TCP', 'NetBIOS', 'Berkas lokal'],
   [443, 'TCP', 'HTTPS', 'Web'],
   [443, 'UDP', 'QUIC (HTTP/3)', 'Web'],
   [80, 'TCP', 'HTTP', 'Web'],
-  [445, 'TCP', 'SMB', 'Berkas lokal'],
+  [445, 'TCP', 'SMB (berbagi berkas)', 'Berkas lokal'],
   [25, 'TCP', 'SMTP', 'Surel'],
   [110, 'TCP', 'POP3', 'Surel'],
   [143, 'TCP', 'IMAP', 'Surel'],
@@ -62,7 +66,6 @@ async function loadConfig() {
       segments: [],
       services: new Map(),
       serviceList: [],
-      aliases: new Map(),
       alertRules: [],
       settings: new Map(),
     };
@@ -88,10 +91,9 @@ async function loadConfig() {
       }
     };
 
-    const [segments, services, aliases, rules, settings] = await Promise.all([
+    const [segments, services, rules, settings] = await Promise.all([
       safeAll('SELECT id, cidr, nama, keterangan, aktif FROM segment ORDER BY cidr'),
-      safeAll('SELECT port, proto, nama, kategori, aktif FROM service_map ORDER BY port'),
-      safeAll('SELECT mac, nama, pemilik, grup FROM device_alias'),
+      safeAll('SELECT id, port, proto, nama, kategori, aktif FROM service_map ORDER BY port'),
       safeAll('SELECT id, kode, nama, tipe, target, operator, ambang, satuan, aktif FROM alert_rule ORDER BY id'),
       safeAll('SELECT kunci, nilai FROM setting'),
     ]);
@@ -113,7 +115,6 @@ async function loadConfig() {
       if (!out.services.has(key)) out.services.set(key, { port, proto, nama, kategori, sumber: 'bawaan' });
     }
 
-    for (const a of aliases) out.aliases.set(a.mac, a);
     out.alertRules = rules;
     for (const s of settings) out.settings.set(s.kunci, s.nilai);
 
@@ -123,14 +124,7 @@ async function loadConfig() {
 
 /** Buang cache konfigurasi (dipanggil setelah menulis). */
 function invalidate() {
-  // Cache disimpan di lib/util; kunci yang dipakai adalah 'cfg:all'.
-  // TTL pendek (60 detik) sudah cukup, tetapi endpoint tulis memanggil ini
-  // agar perubahan langsung terlihat.
-  try {
-    // eslint-disable-next-line global-require
-    const util = require('./util');
-    if (util.__cacheDelete) util.__cacheDelete('cfg:all');
-  } catch { /* diabaikan */ }
+  __cacheDelete('cfg:all');
 }
 
 /** Nama layanan untuk sebuah port/protokol. */
@@ -140,7 +134,7 @@ async function serviceName(port, proto) {
     || { port: Number(port), proto, nama: `port ${port}`, kategori: 'Lainnya', sumber: 'tidak diketahui' };
 }
 
-/** Nama segmen untuk sebuah IP /24, bila ada di tabel segment. */
+/** Nama segmen untuk sebuah IP, bila /24-nya ada di tabel segment. */
 function segmentNameFor(cfg, ip) {
   if (!ip) return null;
   const prefix = ip.split('.').slice(0, 3).join('.');
@@ -151,16 +145,19 @@ function segmentNameFor(cfg, ip) {
   return null;
 }
 
-/** Label perangkat: alias manual > devices.nama > hostname > 'Perangkat MAC'. */
-function deviceLabel(dev, cfg) {
-  const mac = dev?.mac || null;
-  const alias = mac && cfg ? cfg.aliases.get(mac) : null;
-  return (
-    (alias && alias.nama) ||
-    (dev && dev.nama) ||
-    (dev && dev.hostname) ||
-    (mac ? `Perangkat ${mac}` : '(tanpa nama)')
-  );
+/**
+ * Label perangkat. Urutannya sama dengan DOKUMENTASI-UI.md §8.2:
+ *   devices.nama  →  devices.hostname  →  'Perangkat <mac>'
+ * `devices.nama` diisi manual oleh PATCH /api/devices/{mac} dan, untuk pertama
+ * kali, dari komentar DHCP saat sync. sync-mikrotik.js memakai
+ * `nama = COALESCE(devices.nama, v.nama)` sehingga nama manual tidak tertimpa.
+ */
+function deviceLabel(dev) {
+  const bersih = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : '');
+  const mac = dev && dev.mac ? dev.mac : null;
+  return bersih(dev && dev.nama)
+    || bersih(dev && dev.hostname)
+    || (mac ? `Perangkat ${mac}` : '(tanpa nama)');
 }
 
 const alertsEnabled = () => intParam(process.env.ALERTS_ENABLED, 1, 0, 1) === 1;

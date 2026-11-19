@@ -1,13 +1,19 @@
 'use strict';
 
-// db.js — dua pool koneksi:
+// db.js — dua pool koneksi ke skema yang SAMA (netflow_monitor), beda kredensial:
 //
-//   1. data   → netflow_monitor  (user read-only, mis. netflow_api)
-//   2. config → netflow_config   (user baca/tulis, mis. netflow_cfg)
+//   1. data → user read-only (mis. netflow_app). Semua pembacaan trafik.
+//   2. cfg  → user tulis sempit (mis. netflow_cfg). Hanya dipakai untuk
+//             tabel konfigurasi + kolom manual devices.nama/pemilik/grup.
 //
-// Keduanya boleh berada di server yang sama (kasus kita: 111.68.27.116,
-// skema terpisah) atau di server berbeda. Bila CFG_DB_HOST dikosongkan,
-// pool config otomatis memakai alamat pool data.
+// Pemisahan pool TIDAK memisahkan skema: tabel konfigurasi (segment,
+// service_map, alert_rule, alert_event, setting) hidup di dalam
+// netflow_monitor, sama seperti app_user/app_session/isp_map. Yang dipisah
+// adalah HAK AKSES, supaya kredensial Vercel yang dipakai membaca trafik
+// tidak memegang hak tulis.
+//
+// Bila CFG_DB_USER kosong, pool cfg memakai kredensial data (mode uji lokal).
+// CFG_DB_NAME hanya perlu diisi bila Anda memang memakai skema lain.
 
 require('dotenv').config();
 const mysql = require('mysql2/promise');
@@ -55,6 +61,8 @@ function data() {
 }
 
 // ---------- pool config ----------
+// Skema bawaan = skema data (netflow_monitor). Host/port boleh beda bila
+// tabel konfigurasi ditaruh di server lain, tetapi biasanya tidak.
 const configSeparate = str(process.env.CFG_DB_HOST) !== '';
 const cfgConfig = {
   ...base,
@@ -64,7 +72,7 @@ const cfgConfig = {
   password: process.env.CFG_DB_PASSWORD !== undefined && process.env.CFG_DB_PASSWORD !== ''
     ? String(process.env.CFG_DB_PASSWORD)
     : dataConfig.password,
-  database: str(process.env.CFG_DB_NAME, 'netflow_config'),
+  database: str(process.env.CFG_DB_NAME, dataConfig.database),
 };
 
 let _cfg = null;
@@ -108,7 +116,7 @@ const q1 = async (sql, params = []) => {
   const [rows] = await withRetry(() => data().query(sql, params));
   return rows.length ? rows[0] : null;
 };
-/** Jalankan query ke DB konfigurasi. */
+/** Jalankan query lewat pool tulis (CFG_DB_USER). */
 const cq = (sql, params = []) => withRetry(() => cfg().query(sql, params));
 const cq1 = async (sql, params = []) => {
   const [rows] = await withRetry(() => cfg().query(sql, params));
@@ -116,30 +124,46 @@ const cq1 = async (sql, params = []) => {
 };
 
 /**
- * Apakah tabel konfigurasi sudah ada? Di-cache supaya tidak query
- * information_schema tiap permintaan. Dianggap ada bila query berhasil.
+ * Apakah tabel konfigurasi bisa dibaca? Di-cache supaya tidak query tiap
+ * permintaan.
+ *
+ * Hanya galat yang "pasti" (tabel/skema tidak ada, kredensial ditolak) yang
+ * di-cache sebagai false. Galat jaringan (ETIMEDOUT, ...) TIDAK di-cache,
+ * supaya satu gangguan sesaat tidak mematikan lapisan konfigurasi sampai
+ * lambda didaur ulang.
+ *
+ * "Siap" berarti user cfg bisa MEMBACA service_map; hak tulis diperiksa
+ * terpisah saat menulis (galat -> CONFIG_READONLY).
  */
+const CONFIG_DEFINITIVE = new Set([
+  'ER_NO_SUCH_TABLE', 'ER_BAD_DB_ERROR', 'ER_BAD_FIELD_ERROR',
+  'ER_ACCESS_DENIED_ERROR', 'ER_DBACCESS_DENIED_ERROR', 'ER_TABLEACCESS_DENIED_ERROR',
+]);
+
 let _cfgReady = null;
+let _cfgError = null;
 async function configReady() {
   if (_cfgReady !== null) return _cfgReady;
   try {
     await withRetry(() => cfg().query('SELECT 1 FROM service_map LIMIT 1'));
     _cfgReady = true;
+    _cfgError = null;
   } catch (err) {
-    if (err && (err.code === 'ER_NO_SUCH_TABLE' || err.code === 'ER_BAD_DB_ERROR')) {
-      _cfgReady = false;
-    } else {
-      // Kredensial belum diberikan, dll. Jangan lempar — aplikasi tetap boleh
-      // jalan tanpa layer konfigurasi (memakai nama dari hostname saja).
-      _cfgReady = false;
-    }
+    _cfgError = (err && err.code) || 'UNKNOWN';
+    _cfgReady = CONFIG_DEFINITIVE.has(_cfgError) ? false : null;
   }
-  return _cfgReady;
+  return _cfgReady === true;
+}
+
+/** Alasan bila configReady() false; untuk pesan yang bisa ditindaklanjuti. */
+function configStatus() {
+  return { ready: _cfgReady === true, error: _cfgError };
 }
 
 /** Buang cache deteksi & pool (dipakai setelah membuat skema konfigurasi). */
 function resetConfigDetection() {
   _cfgReady = null;
+  _cfgError = null;
 }
 
 async function ping() {
@@ -157,13 +181,15 @@ async function closeAll() {
 
 module.exports = {
   data, cfg, q, q1, cq, cq1,
-  configReady, resetConfigDetection, ping, closeAll,
+  configReady, configStatus, resetConfigDetection, ping, closeAll,
   info: {
     dataHost: dataConfig.host,
     dataDb: dataConfig.database,
+    dataUser: dataConfig.user,
     configSeparate,
     configHost: cfgConfig.host,
     configDb: cfgConfig.database,
+    configUser: cfgConfig.user,
     poolSize: base.connectionLimit,
   },
 };

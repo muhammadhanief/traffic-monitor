@@ -1,6 +1,6 @@
 'use strict';
 
-// routes/config.js — pengelolaan konfigurasi aplikasi (skema netflow_config).
+// routes/config.js — pengelolaan konfigurasi aplikasi.
 //
 //   GET    /api/config                 ringkasan + seluruh isi
 //   GET    /api/config/:table          daftar isi satu tabel
@@ -8,8 +8,12 @@
 //   PATCH  /api/config/:table/:id      ubah
 //   DELETE /api/config/:table/:id      hapus
 //
-// Semua operasi tulis butuh peran admin. Nama tabel dan kolom dibatasi
-// daftar putih supaya tidak bisa diarahkan ke tabel data.
+// Tabel konfigurasi hidup di dalam netflow_monitor, jadi penulisan WAJIB lewat
+// daftar putih TABLES di bawah. Tanpa daftar putih ini, endpoint akan menjadi
+// jalan pintas untuk menulis ke tabel data (traffic_*, flows_*, devices, ...).
+// Nama perangkat TIDAK dikelola di sini — pakai PATCH /api/devices/{mac}.
+//
+// Semua operasi tulis butuh peran admin dan memakai pool CFG_DB_USER.
 
 const express = require('express');
 const db = require('../db');
@@ -32,12 +36,9 @@ const TABLES = {
     wajib: ['port', 'nama'],
     urut: 'port',
   },
-  device_alias: {
-    pk: 'mac', auto: false,
-    cols: ['mac', 'nama', 'pemilik', 'grup'],
-    wajib: ['mac'],
-    urut: 'mac',
-  },
+  // Catatan: penamaan perangkat TIDAK ada di sini. PATCH /api/devices/{mac}
+  // menulis ke devices.nama/pemilik/grup, dan devices sengaja tidak masuk
+  // daftar putih ini supaya konfigurasi tidak bisa menyentuh tabel data.
   alert_rule: {
     pk: 'id', auto: true,
     cols: ['kode', 'nama', 'tipe', 'target', 'operator', 'ambang', 'satuan', 'aktif'],
@@ -66,8 +67,11 @@ function defTable(nama) {
 
 async function assertReady() {
   if (!(await db.configReady())) {
-    throw new ApiError(503, 'CONFIG_UNAVAILABLE',
-      'Skema konfigurasi belum ada. Jalankan: npm run db:config (lihat api/README.md).');
+    const { error } = db.configStatus();
+    const pesan = error === 'ER_NO_SUCH_TABLE' || error === 'ER_BAD_DB_ERROR'
+      ? 'Tabel konfigurasi belum dibuat. Jalankan: npm run db:config (lihat api/README.md).'
+      : `Tabel konfigurasi tidak bisa dibaca (${error || 'tidak diketahui'}). Periksa CFG_DB_USER/CFG_DB_PASSWORD.`;
+    throw new ApiError(503, 'CONFIG_UNAVAILABLE', pesan);
   }
 }
 
@@ -95,8 +99,12 @@ function pick(def, body, { partial = false } = {}) {
 router.get('/', asyncH(async (req, res) => {
   const siap = await db.configReady();
   if (!siap) {
+    const { error } = db.configStatus();
+    const pesan = error === 'ER_NO_SUCH_TABLE' || error === 'ER_BAD_DB_ERROR'
+      ? 'Tabel konfigurasi belum dibuat. Jalankan: npm run db:config'
+      : `Tabel konfigurasi tidak bisa dibaca (${error || 'tidak diketahui'}). Periksa CFG_DB_USER/CFG_DB_PASSWORD.`;
     return ok(res, { tersedia: false, tabel: {} }, await metaFor(rangeQuery(req), {
-      catatan: 'Skema netflow_config belum ada. API tetap jalan memakai nama bawaan.',
+      catatan: `${pesan} API tetap jalan memakai nama bawaan.`,
       cara_membuat: 'npm run db:config',
     }));
   }

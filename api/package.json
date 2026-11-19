@@ -12,7 +12,8 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "db:config": "node --env-file-if-exists=.env tools/init-config.js",
-    "cek": "node tools/cek-endpoint.js"
+    "cek": "node tools/cek-endpoint.js",
+    "cek:config": "node tools/cek-config.js"
   },
   "dependencies": {
     "cors": "^2.8.6",

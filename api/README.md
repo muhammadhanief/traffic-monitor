@@ -5,8 +5,8 @@ Express 5 + mysql2, dibungkus sebagai satu fungsi serverless untuk **Vercel**.
 | | |
 |---|---|
 | Basis | `/api` |
-| Data | `netflow_monitor` di `111.68.27.116` — **hanya baca** |
-| Konfigurasi | `netflow_config` (skema terpisah di host yang sama) — baca/tulis |
+| Data | `netflow_monitor` di `111.68.27.116` — **hanya baca** (user `DB_USER`) |
+| Konfigurasi | tabel konfigurasi **di dalam `netflow_monitor`** — ditulis lewat user `CFG_DB_USER` yang haknya sempit |
 | Frontend | Next.js di cPanel BPS, memanggil API ini **dari browser** |
 | Pusat dokumen | `../DOKUMENTASI-UI.md` (kontrak), `../PRD ... .pdf` |
 
@@ -17,16 +17,17 @@ api/
 ├─ index.js              aplikasi Express + pemasangan rute + penanganan galat
 ├─ db.js                 dua pool: data (baca) & konfigurasi (tulis)
 ├─ vercel.json           konfigurasi Vercel (semua rute -> index.js)
-├─ sql/config-schema.sql DDL skema netflow_config + isi awal
+├─ sql/config-schema.sql DDL tabel konfigurasi + isi awal
 ├─ lib/
 │  ├─ util.js            rentang WIB, pembungkus respons, cache, pembatas laju
 │  ├─ auth.js            verifikasi Bearer token SSO BPS (JWKS)
-│  ├─ config.js          baca service_map/segment/device_alias/alert_rule/setting
+│  ├─ config.js          baca service_map/segment/alert_rule/setting
 │  └─ lookup.js          IP -> MAC -> label perangkat
 ├─ routes/               19 berkas rute (lihat bagian 4)
 └─ tools/
-   ├─ init-config.js     buat skema netflow_config
-   └─ cek-endpoint.js    panggil semua endpoint dan laporkan waktu/ukuran
+   ├─ init-config.js     buat tabel konfigurasi
+   ├─ cek-endpoint.js    panggil semua endpoint dan laporkan waktu/ukuran
+   └─ cek-config.js      uji konfigurasi + PATCH perangkat (tulis lalu bersihkan)
 ```
 
 ## 2. Menjalankan lokal
@@ -37,6 +38,7 @@ copy .env.example .env      # isi kredensial
 npm install
 npm start                   # http://localhost:3001
 npm run cek                 # terminal lain: uji semua endpoint (keluar 1 bila ada yang gagal)
+npm run cek:config          # uji tabel konfigurasi + PATCH perangkat (menulis lalu membersihkan)
 ```
 
 Isi `.env` minimal:
@@ -46,12 +48,15 @@ DB_HOST=111.68.27.116
 DB_USER=netflow_app
 DB_PASSWORD=<sandi read-only>
 DB_NAME=netflow_monitor
-CFG_DB_NAME=netflow_config
+CFG_DB_USER=netflow_cfg      # kosongkan untuk uji lokal (memakai DB_USER)
+CFG_DB_PASSWORD=<sandi tulis sempit>
 AUTH_DISABLED=1          # matikan verifikasi token saat uji lokal
 CORS_ORIGINS=*           # hanya untuk uji lokal
 ```
 
-> **Jangan** pakai user `netflow` (user tulis milik ingest) di API.
+> **Jangan** pakai user `netflow` (user tulis milik ingest) di produksi. Di
+> lokal boleh, karena hanya itu yang punya hak tulis; setelah tabel konfigurasi
+> dibuat, sebaiknya tetap beralih ke user sempit.
 
 ### Menghadapi koneksi yang tidak stabil
 
@@ -69,24 +74,54 @@ membuka koneksi** (`ETIMEDOUT`, `ECONNREFUSED`, …): perintahnya belum sampai
 ke server sehingga tidak ada risiko tulis ganda. Galat di tengah query
 (`PROTOCOL_CONNECTION_LOST`, `ECONNRESET`) **tidak** diulang.
 
-## 3. Dua database
+## 3. Data vs konfigurasi (satu skema, dua hak akses)
 
-| | `netflow_monitor` | `netflow_config` |
+Tabel konfigurasi **tinggal di dalam `netflow_monitor`**, bukan skema terpisah.
+Alasannya: user aplikasi hanya diberi hak pada skema itu, dan tabel serupa
+(`app_user`, `app_session`, `isp_map`) memang sudah ada di sana. Yang dipisah
+adalah **kredensial**, bukan skema:
+
+| | `DB_USER` (baca) | `CFG_DB_USER` (tulis) |
 |---|---|---|
-| Sumber | pipeline (`ingest.js`, `rollup.js`, `sync-*.js`) | aplikasi web |
-| Hak API | `SELECT` saja | `SELECT, INSERT, UPDATE, DELETE` |
-| Isi | trafik, perangkat, dns, kesehatan router | `segment`, `service_map`, `device_alias`, `alert_rule`, `alert_event`, `setting` |
-| Bila kosong | — | API tetap jalan, memakai nama bawaan (hostname / daftar port bawaan) |
+| Dipakai untuk | seluruh pembacaan trafik | menulis konfigurasi & nama perangkat |
+| Hak | `SELECT` pada `netflow_monitor.*` | `SELECT, INSERT, UPDATE, DELETE` pada 5 tabel konfigurasi + `UPDATE (nama, pemilik, grup, sumber)` pada `devices` |
+| Isi | trafik, perangkat, dns, kesehatan router | `segment`, `service_map`, `alert_rule`, `alert_event`, `setting` |
 
-Membuat skema konfigurasi (butuh user dengan hak tulis):
+Dengan begitu kredensial yang tertanam di Vercel untuk *membaca* dashboard
+tidak bisa mengubah trafik. Di lokal, `CFG_DB_USER` boleh dikosongkan sehingga
+pool tulis memakai `DB_USER`.
+
+Membuat tabel konfigurasi (butuh user dengan hak `CREATE TABLE`/`INSERT`):
 
 ```powershell
 npm run db:config
 ```
 
+Skrip itu mencetak perintah `GRANT` untuk user `netflow_cfg` yang sempit.
 Isi `CFG_DB_USER`/`CFG_DB_PASSWORD` di `.env` (atau di Vercel) setelahnya.
-Bila `CFG_DB_HOST` dikosongkan, API memakai alamat `DB_HOST` dengan skema berbeda —
-itu memang rancangan kita (A2).
+`CFG_DB_NAME` hanya perlu diisi bila konfigurasi ditaruh di skema lain; bawaannya
+mengikuti `DB_NAME`.
+
+Hak minimum user `netflow_cfg` (jalankan sebagai root, sekali saja):
+
+```sql
+CREATE USER 'netflow_cfg'@'%' IDENTIFIED BY '<sandi-kuat>';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `netflow_monitor`.segment     TO 'netflow_cfg'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `netflow_monitor`.service_map TO 'netflow_cfg'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `netflow_monitor`.alert_rule  TO 'netflow_cfg'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `netflow_monitor`.alert_event TO 'netflow_cfg'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `netflow_monitor`.setting     TO 'netflow_cfg'@'%';
+GRANT UPDATE (nama, pemilik, grup, sumber) ON `netflow_monitor`.devices TO 'netflow_cfg'@'%';
+FLUSH PRIVILEGES;
+```
+
+Tanpa `SELECT` pada tabel konfigurasi, API tidak bisa membacanya; tanpa blok
+`UPDATE` pada `devices`, penamaan perangkat gagal dengan `CONFIG_READONLY`.
+
+> **Daftar putih tabel.** `routes/config.js` hanya menerima lima tabel di atas.
+> Tabel data (`traffic_*`, `flows_*`, `devices`, …) sengaja tidak bisa dijangkau
+> endpoint konfigurasi. `devices` hanya bisa diubah lewat
+> `PATCH /api/devices/:mac`, dan hanya tiga kolom manual + `sumber`.
 
 ## 4. Daftar endpoint
 
@@ -138,7 +173,7 @@ Arti `meta`:
 | GET | `/api/audit/log` | `kategori`, `q`, `limit`, `from`, `to` |
 | GET | `/api/alerts` | `range` |
 | GET | `/api/config` | — |
-| GET/POST/PATCH/DELETE | `/api/config/:table[/:id]` | `segment`, `service_map`, `device_alias`, `alert_rule`, `alert_event`, `setting` (tulis: admin) |
+| GET/POST/PATCH/DELETE | `/api/config/:table[/:id]` | `segment`, `service_map`, `alert_rule`, `alert_event`, `setting` (tulis: admin) |
 
 `range` = `today` \| `24h` \| `7d` \| `30d` \| `month` \| `year`.
 

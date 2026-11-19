@@ -5,7 +5,7 @@
 // Peringatan dihitung dari kondisi nyata (bukan tabel denyut), karena:
 //   - Vercel tidak bisa membaca Scheduled Task Windows;
 //   - tabel alert_event belum tentu ada.
-// Aturan tambahan bisa diisi di tabel `alert_rule` (skema netflow_config);
+// Aturan tambahan bisa diisi di tabel `alert_rule` (di dalam netflow_monitor);
 // bila tabelnya ada, hasil evaluasi ikut disimpan ke `alert_event`.
 
 const express = require('express');

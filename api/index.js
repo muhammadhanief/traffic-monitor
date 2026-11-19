@@ -52,7 +52,7 @@ app.get('/', (_req, res) => {
     status: 'jalan',
     basis: '/api',
     autentikasi: auth.info.authEnabled ? 'Bearer token SSO BPS' : 'NONAKTIF (mode pengembangan)',
-    database: db.info,
+    database: { data: db.info.dataDb, tulisan: db.info.configDb },
     endpoint: {
       kesehatan: '/api/health',
       ringkasan: '/api/summary',
@@ -103,8 +103,40 @@ app.use((req, res) => {
 // ---------- penanganan galat ----------
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
-  const status = err instanceof util.ApiError ? err.status : 500;
-  const code = err instanceof util.ApiError ? err.code : 'INTERNAL_ERROR';
+  let status = err instanceof util.ApiError ? err.status : 500;
+  let code = err instanceof util.ApiError ? err.code : 'INTERNAL_ERROR';
+
+  // Galat hak akses MySQL hampir selalu berarti CFG_DB_USER belum diisi
+  // (pool tulis memakai user read-only). Beri pesan yang bisa ditindaklanjuti,
+  // jangan 500 "Terjadi galat di server".
+  if (err && (err.code === 'ER_TABLEACCESS_DENIED_ERROR' || err.code === 'ER_DBACCESS_DENIED_ERROR')) {
+    status = 503;
+    code = 'CONFIG_READONLY';
+    err.message = 'User database tidak punya hak yang dibutuhkan. Bila ini terjadi saat '
+      + 'menyimpan, isi CFG_DB_USER/CFG_DB_PASSWORD dengan user sempit (api/README.md bagian 3).';
+  }
+  // Tabel konfigurasi yang belum dibuat -> pesan yang memberi jalan keluar.
+  if (err && err.code === 'ER_NO_SUCH_TABLE') {
+    const m = /Table '[^']*\.([A-Za-z0-9_]+)' doesn't exist/.exec(err.sqlMessage || '');
+    if (m && ['segment', 'service_map', 'alert_rule', 'alert_event', 'setting'].includes(m[1].toLowerCase())) {
+      status = 503;
+      code = 'CONFIG_UNAVAILABLE';
+      err.message = 'Tabel konfigurasi belum dibuat. Jalankan: npm run db:config';
+    }
+  }
+  // Pelanggaran UNIQUE (mis. port+proto ganda) adalah kesalahan pemanggil,
+  // bukan galat server.
+  if (err && err.code === 'ER_DUP_ENTRY') {
+    status = 409;
+    code = 'DUPLIKAT';
+    err.message = 'Baris dengan kunci yang sama sudah ada.';
+  }
+  // Foreign key: baris induk tidak ada / masih dipakai.
+  if (err && (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_ROW_IS_REFERENCED_2')) {
+    status = 409;
+    code = 'TERKAIT_BARIS_LAIN';
+    err.message = 'Baris terkait tabel lain; periksa referensinya.';
+  }
 
   if (status >= 500) {
     console.error(`[galat] ${req.method} ${req.originalUrl}:`, err.message, err.code || '');
@@ -127,14 +159,15 @@ if (require.main === module) {
   const port = util.intParam(process.env.PORT, 3001, 1, 65535);
   app.listen(port, async () => {
     console.log(`API jalan di http://localhost:${port}`);
-    console.log(`  data   : ${db.info.dataHost}/${db.info.dataDb} (pool ${db.info.poolSize})`);
-    console.log(`  config : ${db.info.configHost}/${db.info.configDb}${db.info.configSeparate ? '' : ' (sepool dengan data)'}`);
+    console.log(`  data   : ${db.info.dataHost}/${db.info.dataDb} sebagai "${db.info.dataUser}" (pool ${db.info.poolSize})`);
+    console.log(`  tulis  : ${db.info.configHost}/${db.info.configDb} sebagai "${db.info.configUser}"`);
     console.log(`  auth   : ${auth.info.authEnabled ? 'Bearer SSO aktif' : 'NONAKTIF'}`);
     try {
       const info = await db.ping();
       console.log(`  MySQL  : ${info.v} | time_zone ${info.tz} | sekarang ${info.now_wib}`);
       const siap = await db.configReady();
-      console.log(`  konfigurasi: ${siap ? 'siap' : 'belum ada (pakai nama bawaan)'}`);
+      const { error } = db.configStatus();
+      console.log(`  tabel konfigurasi: ${siap ? 'siap' : `belum bisa dibaca (${error})`}`);
     } catch (err) {
       console.error(`  MySQL  : GAGAL terhubung — ${err.message}`);
     }
