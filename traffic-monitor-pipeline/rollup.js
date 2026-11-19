@@ -4,6 +4,8 @@
 //   node --env-file-if-exists=.env rollup.js --hourly   (tiap jam)
 //   node --env-file-if-exists=.env rollup.js --daily    (tiap hari 00:15)
 //   node --env-file-if-exists=.env rollup.js            (keduanya, untuk manual/backfill)
+//   node --env-file-if-exists=.env rollup.js --svc --backfill
+//       (hanya tabel layanan svc_hourly/svc_daily, seluruh data yang tersedia)
 //
 // Prinsip: setiap rangkuman DIHITUNG ULANG lalu ditimpa (DELETE + INSERT dalam
 // satu transaksi), bukan ditambahkan. Jadi aman dijalankan berulang, aman
@@ -21,25 +23,44 @@ const mode = process.argv.includes('--daily') ? 'daily'
 // bisa dipulihkan oleh jendela normal 26 jam).
 const BACKFILL = process.argv.includes('--backfill');
 
+// --svc: hanya rangkuman layanan (svc_hourly/svc_daily), dipakai untuk
+// mengisi atau memperbaiki tabel layanan tanpa menyentuh rollup lain.
+const ONLY_SVC = process.argv.includes('--svc');
+
 const keepMinuteDays = Number(process.env.KEEP_MINUTE_DAYS || 30);
 const keepDetailDays = Number(process.env.KEEP_DETAIL_DAYS || 3);
+const keepSvcHourDays = Number(process.env.KEEP_SVC_HOUR_DAYS || 90);
+const keepSvcDailyDays = Number(process.env.KEEP_SVC_DAILY_DAYS || 730);
+
+// flows_daily_ip & svc_hourly hanya bisa dihitung dari flows_5m yang masih
+// tersimpan, jadi jendelanya tidak boleh melebihi retensi detail.
+const detailWindow = Math.min(
+  keepDetailDays,
+  Number(process.env.ROLLUP_DETAIL_WINDOW || keepDetailDays)
+);
 
 const CFG = {
   keepDetailDays,
   keepMinuteDays,
   keepHourDays: Number(process.env.KEEP_HOUR_DAYS || 730),
   keepDailyIpDays: Number(process.env.KEEP_DAILY_IP_DAYS || 1825),
+  keepSvcHourDays,
+  keepSvcDailyDays,
   // ambang penyimpanan IP tujuan (byte). Di bawah ini digabung ke '(lainnya)'
   ipDailyMin: Number(process.env.IP_DAILY_MIN_BYTES || 20971520), // 20 MB/hari
   ipMonthlyMin: Number(process.env.IP_MONTHLY_MIN_BYTES || 52428800), // 50 MB/bulan
   // jendela hitung ulang
   hourWindow: BACKFILL ? keepMinuteDays * 24 : Number(process.env.ROLLUP_HOUR_WINDOW || 26),
   dayWindow: BACKFILL ? keepMinuteDays : Number(process.env.ROLLUP_DAY_WINDOW || 2),
+  // svc_hourly: jendela kecil (3 jam) supaya tiap putaran tidak memindai
+  // seluruh retensi flows_5m. `--svc --backfill` memakai lebar retensi penuh.
+  svcHourWindow: BACKFILL
+    ? detailWindow * 24
+    : Number(process.env.ROLLUP_SVC_HOUR_WINDOW || 3),
+  // svc_daily diturunkan dari svc_hourly, jadi jendelanya boleh lebar.
+  svcDayWindow: BACKFILL ? keepSvcHourDays : Number(process.env.ROLLUP_DAY_WINDOW || 2),
   // flows_daily_ip hanya bisa dihitung dari flows_5m yang masih tersimpan
-  detailWindow: Math.min(
-    keepDetailDays,
-    Number(process.env.ROLLUP_DETAIL_WINDOW || keepDetailDays)
-  ),
+  detailWindow,
 };
 
 const mb = (b) => (Number(b) / 1024 / 1024).toFixed(1);
@@ -96,6 +117,35 @@ async function hourly(conn) {
      FROM traffic_daily
      WHERE day >= DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, '%Y-%m-01')
      GROUP BY DATE_FORMAT(day, '%Y-%m-01'), local_ip, dir, wan_if`);
+
+  await svcRollup(conn);
+}
+
+// ---------- rollup layanan (port + protokol) ----------
+// Dijalankan di dalam jalur --hourly: halaman "Layanan" dan widget "top
+// layanan" jadi membaca ribuan baris, bukan jutaan. Arah (up/down) dipisah
+// karena port yang sama bisa dominan di satu arah saja.
+const SVC_HOUR_WINDOW = `(${HOUR_START} - ${CFG.svcHourWindow * 3600})`;
+
+async function svcRollup(conn) {
+  console.log('\n[svc] rangkum layanan (port + protokol)');
+
+  await refresh(conn, 'svc_hourly',
+    `DELETE FROM svc_hourly WHERE ts_hour >= ${SVC_HOUR_WINDOW}`,
+    `INSERT INTO svc_hourly (ts_hour, svc_port, proto, dir, bytes, packets, flows)
+     SELECT ts - MOD(ts, 3600), svc_port, proto, dir, SUM(bytes), SUM(packets), COUNT(*)
+     FROM flows_5m
+     WHERE ts >= ${SVC_HOUR_WINDOW}
+     GROUP BY ts - MOD(ts, 3600), svc_port, proto, dir`);
+
+  const dayFrom = `UNIX_TIMESTAMP(CURDATE() - INTERVAL ${CFG.svcDayWindow} DAY)`;
+  await refresh(conn, 'svc_daily',
+    `DELETE FROM svc_daily WHERE day >= CURDATE() - INTERVAL ${CFG.svcDayWindow} DAY`,
+    `INSERT INTO svc_daily (day, svc_port, proto, dir, bytes, packets, flows)
+     SELECT DATE(FROM_UNIXTIME(ts_hour)), svc_port, proto, dir, SUM(bytes), SUM(packets), SUM(flows)
+     FROM svc_hourly
+     WHERE ts_hour >= ${dayFrom}
+     GROUP BY DATE(FROM_UNIXTIME(ts_hour)), svc_port, proto, dir`);
 }
 
 // ---------- rollup per hari ----------
@@ -186,6 +236,8 @@ async function cleanup(conn) {
     ['traffic_1m', `DELETE FROM traffic_1m WHERE ts < UNIX_TIMESTAMP(NOW() - INTERVAL ${CFG.keepMinuteDays} DAY)`],
     ['traffic_1h', `DELETE FROM traffic_1h WHERE ts_hour < UNIX_TIMESTAMP(NOW() - INTERVAL ${CFG.keepHourDays} DAY)`],
     ['flows_daily_ip', `DELETE FROM flows_daily_ip WHERE day < CURDATE() - INTERVAL ${CFG.keepDailyIpDays} DAY`],
+    ['svc_hourly', `DELETE FROM svc_hourly WHERE ts_hour < UNIX_TIMESTAMP(NOW() - INTERVAL ${CFG.keepSvcHourDays} DAY)`],
+    ['svc_daily', `DELETE FROM svc_daily WHERE day < CURDATE() - INTERVAL ${CFG.keepSvcDailyDays} DAY`],
   ];
   for (const [label, sql] of jobs) {
     const [r] = await conn.query(sql);
@@ -202,7 +254,9 @@ async function report(conn) {
     UNION ALL SELECT 'traffic_monthly', COUNT(*) FROM traffic_monthly
     UNION ALL SELECT 'flows_5m', COUNT(*) FROM flows_5m
     UNION ALL SELECT 'flows_daily_ip', COUNT(*) FROM flows_daily_ip
-    UNION ALL SELECT 'flows_monthly_ip', COUNT(*) FROM flows_monthly_ip`);
+    UNION ALL SELECT 'flows_monthly_ip', COUNT(*) FROM flows_monthly_ip
+    UNION ALL SELECT 'svc_hourly', COUNT(*) FROM svc_hourly
+    UNION ALL SELECT 'svc_daily', COUNT(*) FROM svc_daily`);
   console.log('\n=== isi tabel ===');
   for (const r of rows) console.log(`  ${r.t.padEnd(18)} ${String(r.baris).padStart(10)} baris`);
 
@@ -218,13 +272,17 @@ async function report(conn) {
 }
 
 // ---------- jalan ----------
-console.log(`Rollup mode=${mode} | ${target()}`);
+console.log(`Rollup mode=${ONLY_SVC ? 'svc' : mode}${BACKFILL ? ' (backfill)' : ''} | ${target()}`);
 
 const conn = await mysql.createConnection({ ...DB, dateStrings: true, multipleStatements: false });
 try {
   await ensureSchema(conn);
-  if (mode === 'hourly' || mode === 'all') await hourly(conn);
-  if (mode === 'daily' || mode === 'all') await daily(conn);
+  if (ONLY_SVC) {
+    await svcRollup(conn);
+  } else {
+    if (mode === 'hourly' || mode === 'all') await hourly(conn);
+    if (mode === 'daily' || mode === 'all') await daily(conn);
+  }
   await cleanup(conn);
   await report(conn);
   console.log('\nSelesai.');

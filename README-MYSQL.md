@@ -19,9 +19,9 @@ membaca database langsung lewat jaringan.
 | File | Keterangan |
 |---|---|
 | `db.js` | **Baru.** Konfigurasi + pool koneksi MySQL + `ensureSchema()` (buat tabel dari `schema.sql`). Dibaca dari `.env`. |
-| `schema.sql` | **Baru.** DDL MySQL: `traffic_1m`, `flows_5m`, 5 tabel rollup, `devices`/`device_ip_history`/`dns_map`, + 8 tabel operasional (`ingest_status`, `router_stat`, `port_map`, `router_session`, `router_log`, `isp_map`, `app_user`, `app_session`). Dibuat otomatis saat ingest/rollup/sync start. |
+| `schema.sql` | **Baru.** DDL MySQL: `traffic_1m`, `flows_5m`, 7 tabel rollup, `devices`/`device_ip_history`/`dns_map`, + 8 tabel operasional (`ingest_status`, `router_stat`, `port_map`, `router_session`, `router_log`, `isp_map`, `app_user`, `app_session`). Dibuat otomatis saat ingest/rollup/sync start. |
 | `migrate-to-mysql.js` | **Baru.** Penyalin data SQLite → MySQL. |
-| `rollup.js` | **Baru.** Merangkum data ke tabel per jam/hari/bulan + IP tujuan jangka panjang, sekaligus membersihkan data kedaluwarsa. |
+| `rollup.js` | **Baru.** Merangkum data ke tabel per jam/hari/bulan, IP tujuan jangka panjang, dan layanan (`svc_hourly`/`svc_daily`), sekaligus membersihkan data kedaluwarsa. |
 | `sync-mikrotik.js` | **Baru.** Menarik identitas perangkat (DHCP lease/ARP) & nama tujuan (cache DNS) dari router lewat REST API. |
 | `sync-router.js` | **Baru.** Snapshot kesehatan router (CPU/suhu/RAM/PSU/fan/NTP), peta MAC↔port, sesi login, dan salinan log ke `router_stat`/`port_map`/`router_session`/`router_log`. Ada mode `--dry-run`. |
 | `mt-rest.js` | **Baru.** Klien REST RouterOS bersama (hanya GET) untuk kedua script sync. |
@@ -64,6 +64,7 @@ npm run report 30         # laporan 30 menit terakhir
 npm run rollup            # rangkum + bersihkan (manual; biasanya lewat Task)
 npm run rollup:hourly     # hanya bagian per jam
 npm run rollup:daily      # hanya bagian per hari (IP tujuan)
+npm run rollup:svc        # isi/perbaiki tabel layanan (svc_hourly, svc_daily) dari flows_5m
 npm run sync              # tarik identitas perangkat + nama tujuan dari MikroTik
 npm run sync:router       # snapshot kesehatan/port/sesi/log router
 npm run sync:router -- --dry-run   # lihat hasil tanpa menulis DB
@@ -85,6 +86,8 @@ Detail lengkap + contoh query ada di `RANCANGAN-RETENSI.md`. Ringkasnya:
 | `traffic_monthly` | idem, per bulan | selamanya |
 | `flows_daily_ip` | perangkat + IP tujuan, per hari | 5 tahun |
 | `flows_monthly_ip` | perangkat + IP tujuan, per bulan | 10 tahun |
+| `svc_hourly` | port + protokol + arah, per jam | 90 hari |
+| `svc_daily` | idem, per hari | 2 tahun |
 
 Semua rollup **dihitung ulang lalu ditimpa**, jadi aman dijalankan berulang.
 `flows_5m`/`flows_daily_ip` juga menyimpan baris `remote_ip='(lainnya)'` untuk

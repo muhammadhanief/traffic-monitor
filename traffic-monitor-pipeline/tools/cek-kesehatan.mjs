@@ -50,9 +50,14 @@ const [[roll]] = await c.query(`
   SELECT (SELECT COUNT(*) FROM traffic_1h) h,
          (SELECT COUNT(*) FROM traffic_daily) d,
          (SELECT COUNT(*) FROM traffic_monthly) m,
-         (SELECT COUNT(*) FROM flows_daily_ip) ip`);
+         (SELECT COUNT(*) FROM flows_daily_ip) ip,
+         (SELECT COUNT(*) FROM svc_hourly) sh,
+         (SELECT COUNT(*) FROM svc_daily) sd`);
 cek('tabel rollup', roll.h > 0 && roll.d > 0 && roll.m > 0 && roll.ip > 0,
   `1h ${roll.h}, daily ${roll.d}, monthly ${roll.m}, ip ${roll.ip}`);
+cek('tabel layanan', roll.sh > 0 && roll.sd > 0,
+  `svc_hourly ${roll.sh}, svc_daily ${roll.sd}` +
+  (roll.sh > 0 ? '' : ' — jalankan: npm run rollup:svc'));
 
 // 5. identitas perangkat
 const dev = await one(`

@@ -98,6 +98,35 @@ CREATE TABLE IF NOT EXISTS flows_monthly_ip (
   KEY idx_ip (remote_ip, month)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Ringkasan layanan (port tujuan + protokol) per jam, diturunkan dari
+-- flows_5m. Tanpa tabel ini laporan "top layanan" harus memindai jutaan
+-- baris detail tiap kali halaman dibuka (12 detik untuk 24 jam).
+-- Retensi 90 hari: cukup untuk tren layanan triwulanan.
+CREATE TABLE IF NOT EXISTS svc_hourly (
+  ts_hour  BIGINT UNSIGNED NOT NULL COMMENT 'epoch detik, awal jam',
+  svc_port INT UNSIGNED NOT NULL COMMENT 'port layanan di sisi remote',
+  proto    VARCHAR(8) CHARACTER SET ascii NOT NULL,
+  dir      ENUM('up','down') NOT NULL,
+  bytes    BIGINT UNSIGNED NOT NULL,
+  packets  BIGINT UNSIGNED NOT NULL,
+  flows    INT UNSIGNED NOT NULL COMMENT 'jumlah baris flow_5m penyusun baris ini',
+  PRIMARY KEY (ts_hour, svc_port, proto, dir),
+  KEY idx_svc (svc_port, proto, ts_hour)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Ringkasan layanan per hari, diturunkan dari svc_hourly (retensi 2 tahun).
+CREATE TABLE IF NOT EXISTS svc_daily (
+  day      DATE NOT NULL,
+  svc_port INT UNSIGNED NOT NULL,
+  proto    VARCHAR(8) CHARACTER SET ascii NOT NULL,
+  dir      ENUM('up','down') NOT NULL,
+  bytes    BIGINT UNSIGNED NOT NULL,
+  packets  BIGINT UNSIGNED NOT NULL,
+  flows    INT UNSIGNED NOT NULL,
+  PRIMARY KEY (day, svc_port, proto, dir),
+  KEY idx_svc (svc_port, proto, day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ============================================================
 --  Identitas perangkat & nama tujuan (diisi sync-mikrotik.js)
 --  Sumber: DHCP lease + ARP + cache DNS router MikroTik.

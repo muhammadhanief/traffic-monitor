@@ -32,8 +32,10 @@ Kesimpulan: detail tujuan mentah tidak mungkin disimpan bertahun-tahun
 | `traffic_monthly` | idem, per bulan | selamanya | ~5 MB |
 | `flows_daily_ip` | perangkat + IP tujuan, per hari | 5 tahun | ~0,5 GB |
 | `flows_monthly_ip` | perangkat + IP tujuan, per bulan | 10 tahun | ~0,5 GB |
+| `svc_hourly` | port + protokol + arah, per jam | 90 hari | ~0,3 GB |
+| `svc_daily` | idem, per hari | 2 tahun | ~0,3 GB |
 
-Total stabil: **±7,5–10 GB** — tidak tumbuh walau berjalan bertahun-tahun,
+Total stabil: **±8–11 GB** — tidak tumbuh walau berjalan bertahun-tahun,
 karena yang besar (`flows_5m`, `traffic_1m`) berputar.
 
 Zona waktu: hari/bulan dihitung **WIB** (server `Asia/Jakarta`, sudah dicek).
@@ -103,6 +105,32 @@ CREATE TABLE IF NOT EXISTS flows_monthly_ip (
   PRIMARY KEY (month, local_ip, remote_ip, dir),
   KEY idx_ip (remote_ip, month)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Ringkasan layanan (port tujuan + protokol) per jam (90 hari)
+CREATE TABLE IF NOT EXISTS svc_hourly (
+  ts_hour  BIGINT UNSIGNED NOT NULL,
+  svc_port INT UNSIGNED NOT NULL,
+  proto    VARCHAR(8) CHARACTER SET ascii NOT NULL,
+  dir      ENUM('up','down') NOT NULL,
+  bytes    BIGINT UNSIGNED NOT NULL,
+  packets  BIGINT UNSIGNED NOT NULL,
+  flows    INT UNSIGNED NOT NULL,
+  PRIMARY KEY (ts_hour, svc_port, proto, dir),
+  KEY idx_svc (svc_port, proto, ts_hour)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Ringkasan layanan per hari (2 tahun)
+CREATE TABLE IF NOT EXISTS svc_daily (
+  day      DATE NOT NULL,
+  svc_port INT UNSIGNED NOT NULL,
+  proto    VARCHAR(8) CHARACTER SET ascii NOT NULL,
+  dir      ENUM('up','down') NOT NULL,
+  bytes    BIGINT UNSIGNED NOT NULL,
+  packets  BIGINT UNSIGNED NOT NULL,
+  flows    INT UNSIGNED NOT NULL,
+  PRIMARY KEY (day, svc_port, proto, dir),
+  KEY idx_svc (svc_port, proto, day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
 ### Kenapa ada baris `'(lainnya)'`
@@ -133,7 +161,9 @@ setelah server mati, dan tidak pernah menghitung ganda.
 | tiap jam (menit ke-5) | `traffic_1h` 2 jam terakhir | `traffic_1m` |
 | tiap jam (menit ke-5) | `traffic_daily` hari ini & kemarin | `traffic_1h` |
 | tiap jam (menit ke-5) | `traffic_monthly` bulan ini | `traffic_daily` |
-| tiap jam | cleanup `traffic_1m`, `traffic_1h` | — |
+| tiap jam (menit ke-5) | `svc_hourly` 3 jam terakhir | `flows_5m` |
+| tiap jam (menit ke-5) | `svc_daily` hari ini & kemarin | `svc_hourly` |
+| tiap jam | cleanup `traffic_1m`, `traffic_1h`, `svc_hourly`, `svc_daily` | — |
 | 00:15 tiap hari | `flows_daily_ip` kemarin (+ hari ini opsional) | `flows_5m` |
 | 00:15 tiap hari | `flows_monthly_ip` bulan ini & bulan lalu | `flows_daily_ip` |
 | 00:15 tiap hari | cleanup `flows_5m`, `flows_daily_ip` | — |
@@ -245,6 +275,8 @@ KEEP_DETAIL_DAYS=3        # flows_5m
 KEEP_MINUTE_DAYS=30       # traffic_1m
 KEEP_HOUR_DAYS=730        # traffic_1h (2 tahun)
 KEEP_DAILY_IP_DAYS=1825   # flows_daily_ip (5 tahun)
+KEEP_SVC_HOUR_DAYS=90     # svc_hourly
+KEEP_SVC_DAILY_DAYS=730   # svc_daily (2 tahun)
 # traffic_daily & traffic_monthly & flows_monthly_ip: disimpan selamanya
 
 IP_DAILY_MIN_BYTES=20971520    # 20 MB/hari per perangkat per IP

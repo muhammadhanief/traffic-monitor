@@ -9,6 +9,7 @@
     "rollup": "node --env-file-if-exists=.env rollup.js",
     "rollup:hourly": "node --env-file-if-exists=.env rollup.js --hourly",
     "rollup:daily": "node --env-file-if-exists=.env rollup.js --daily",
+    "rollup:svc": "node --env-file-if-exists=.env rollup.js --svc --backfill",
     "sync": "node --env-file-if-exists=.env sync-mikrotik.js",
     "sync:router": "node --env-file-if-exists=.env sync-router.js",
     "backfill": "node --env-file-if-exists=.env rollup.js --backfill",
